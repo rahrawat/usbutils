@@ -1,5 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0
+# Copyright (c) 2009 Kay Sievers <kay.sievers@vrfy.org>
+
 AC_INIT([usbutils],
-	[009],
+	[010],
 	[linux-usb@vger.kernel.org])
 AC_PREREQ(2.60)
 AM_INIT_AUTOMAKE([check-news foreign 1.9 dist-bzip2])
