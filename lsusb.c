@@ -60,6 +60,7 @@
 #define USB_DC_PLATFORM 		0x05
 #define USB_DC_SUPERSPEEDPLUS		0x0a
 #define USB_DC_BILLBOARD		0x0d
+#define USB_DC_BILLBOARD_ALT_MODE	0x0f
 #define USB_DC_CONFIGURATION_SUMMARY	0x10
 
 /* Conventional codes for class-specific descriptors.  The convention is
@@ -115,7 +116,7 @@
 #define WEBUSB_GET_URL		0x02
 #define USB_DT_WEBUSB_URL	0x03
 
-static unsigned int verblevel = VERBLEVEL_DEFAULT;
+unsigned int verblevel = VERBLEVEL_DEFAULT;
 static int do_report_desc = 1;
 static const char * const encryption_type[] = {
 	"UNSECURE",
@@ -153,11 +154,13 @@ static void dump_videostreaming_interface(const unsigned char *buf);
 static void dump_dfu_interface(const unsigned char *buf);
 static char *dump_comm_descriptor(libusb_device_handle *dev, const unsigned char *buf, char *indent);
 static void dump_hid_device(libusb_device_handle *dev, const struct libusb_interface_descriptor *interface, const unsigned char *buf);
+static void dump_printer_device(libusb_device_handle *dev, const struct libusb_interface_descriptor *interface, const unsigned char *buf);
 static void dump_audiostreaming_endpoint(libusb_device_handle *dev, const unsigned char *buf, int protocol);
 static void dump_midistreaming_endpoint(const unsigned char *buf);
 static void dump_hub(const char *prefix, const unsigned char *p, int tt_type);
 static void dump_ccid_device(const unsigned char *buf);
 static void dump_billboard_device_capability_desc(libusb_device_handle *dev, unsigned char *buf);
+static void dump_billboard_alt_mode_capability_desc(libusb_device_handle *dev, unsigned char *buf);
 
 /* ---------------------------------------------------------------------- */
 
@@ -564,6 +567,9 @@ static void dump_altsetting(libusb_device_handle *dev, const struct libusb_inter
 					break;
 				case LIBUSB_CLASS_HID:
 					dump_hid_device(dev, interface, buf);
+					break;
+				case LIBUSB_CLASS_PRINTER:
+					dump_printer_device(dev, interface, buf);
 					break;
 				case USB_CLASS_CCID:
 					dump_ccid_device(buf);
@@ -2371,6 +2377,63 @@ static void dump_report_desc(unsigned char *b, int l)
 	}
 }
 
+static void dump_printer_device(libusb_device_handle *dev,
+				const struct libusb_interface_descriptor *interface,
+				const unsigned char *buf)
+{
+	unsigned int i;
+	unsigned int n;
+
+	if (interface->bInterfaceProtocol != 0x04)  /* IPP-over-USB */
+		return;
+
+	printf("        IPP Printer Descriptor:\n"
+	       "          bLength             %5u\n"
+	       "          bDescriptorType     %5u\n"
+	       "          bcdReleaseNumber    %5u\n"
+	       "          bcdNumDescriptors   %5u\n",
+	       buf[0], buf[1], buf[2], buf[3]);
+
+	n = 4;
+	for (i = 0 ; i < buf[3] ; i++) {
+		switch (buf[n]) {
+		case 0x00: {  /* Basic capabilities */
+			uint16_t caps = le16_to_cpu(*((uint16_t*)&buf[n+2]));
+			char *uuid = get_dev_string(dev, buf[n+5]);
+
+			printf("            iIPPVersionsSupported %5u\n", buf[n+4]);
+			printf("            iIPPPrinterUUID       %5u %s\n", buf[n+5], uuid);
+			printf("            wBasicCapabilities   0x%04x ", caps);
+			if (caps & 0x01)
+				printf(" Print");
+			if (caps & 0x02)
+				printf(" Scan");
+			if (caps & 0x04)
+				printf(" Fax");
+			if (caps & 0x08)
+				printf(" Other");
+			if (caps & 0x10)
+				printf(" HTTP-over-USB");
+			if ((caps & 0x60) == 0x00)
+				printf(" No-Auth");
+			else if ((caps & 0x60) == 0x20)
+				printf(" Username-Auth");
+			else if ((caps & 0x60) == 0x40)
+				printf(" Reserved-Auth");
+			else if ((caps & 0x60) == 0x60)
+				printf(" Negotiable-Auth");
+			printf("\n");
+			break;
+		}
+		default:
+			/* Vendor Specific, Ignore for now. */
+			printf("            UnknownCapabilities   %5u %5u\n", buf[n], buf[n+1]);
+			break;
+		}
+		n += 2 + buf[n+1];
+	}
+}
+
 static void dump_hid_device(libusb_device_handle *dev,
 			    const struct libusb_interface_descriptor *interface,
 			    const unsigned char *buf)
@@ -3420,6 +3483,23 @@ static void dump_billboard_device_capability_desc(libusb_device_handle *dev, uns
 	free (url);
 }
 
+static void dump_billboard_alt_mode_capability_desc(libusb_device_handle *dev, unsigned char *buf)
+{
+	if (buf[0] != 8) {
+		fprintf(stderr, "  Bad Billboard Alternate Mode Capability descriptor.\n");
+		return;
+	}
+
+	printf("  Billboard Alternate Mode Capability:\n"
+			"    bLength                 %5u\n"
+			"    bDescriptorType         %5u\n"
+			"    bDevCapabilityType      %5u\n"
+			"    bIndex                  %5u\n"
+			"    dwAlternateModeVdo          0x%02X%02X%02X%02X\n",
+			buf[0], buf[1], buf[2], buf[3],
+			buf[4], buf[5], buf[6], buf[7]);
+}
+
 static void dump_bos_descriptor(libusb_device_handle *fd)
 {
 	/* Total length of BOS descriptors varies.
@@ -3503,6 +3583,9 @@ static void dump_bos_descriptor(libusb_device_handle *fd)
 			break;
 		case USB_DC_BILLBOARD:
 			dump_billboard_device_capability_desc(fd, buf);
+			break;
+		case USB_DC_BILLBOARD_ALT_MODE:
+			dump_billboard_alt_mode_capability_desc(fd, buf);
 			break;
 		case USB_DC_CONFIGURATION_SUMMARY:
 			printf("  Configuration Summary Device Capability:\n");
@@ -3759,8 +3842,6 @@ int main(int argc, char *argv[])
 	status = 0;
 
 	if (treemode) {
-		/* treemode requires at least verblevel 1 */
-		verblevel += 1 - VERBLEVEL_DEFAULT;
 		status = lsusb_t();
 		names_exit();
 		return status;
